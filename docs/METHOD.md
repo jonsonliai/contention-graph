@@ -24,6 +24,26 @@ the cleanest to induce and the hardest to explain away:
   request took something from it. That is an attribution question rather than a capacity
   question, and it is the class this work is about.
 
+## Deliberate cache constraint
+
+The runtime is started with `--gpu-memory-utilization` well below its default, in order to
+reduce the size of the KV cache and induce, on a single GPU, the pressure that would otherwise
+arise only under production multi-tenancy.
+
+**This changes the conditions under which the phenomenon is triggered. It does not change the
+phenomenon.** Eviction under cache pressure is the same event whether the cache is small
+because it was constrained or small relative to the load it carries. What the constraint buys
+is that the event occurs reliably within a run of minutes rather than sporadically over hours.
+
+**What it costs is generality**, and the cost is stated rather than absorbed: a result obtained
+under a constrained cache establishes that the attribution gap exists when eviction occurs. It
+does not establish how often eviction occurs in production, and no claim to that effect is
+made here. The published operator accounts at the introduction address frequency; this
+experiment addresses attributability.
+
+The value used is recorded in the provenance block of every result.
+
+
 ## Threats to validity
 
 | Threat | Handling |
