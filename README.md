@@ -1,11 +1,5 @@
 # Contention Graph: demonstrating an attribution gap in LLM inference telemetry
 
-<!-- FILED-VERSION-BLOCK -->
-> **Version cited in the immigration petition:** release `v1.0-test`, DOI 10.5281/zenodo.9999999.
-> Later releases continue the work; they do not alter that version. To retrieve the
-> state that was cited: `git checkout v1.0-test`. The exact commit hash that release
-> resolves to is recorded in the GitHub Release and in the Zenodo archive metadata.
-<!-- FILED-VERSION-BLOCK -->
 
 
 A reproducible experiment showing that when one request degrades another through shared
