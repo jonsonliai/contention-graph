@@ -5,6 +5,37 @@ See `VERSIONING.md` for what the version numbers mean.
 
 <!-- Add new entries directly below this line. -->
 
+## v0.1.4-residual — 2026-08-31
+
+**Retrieve with:** `git checkout v0.1.4-residual`
+
+A diagnostic for the case where a variable correlates with part of an effect and the table
+reads as though it explains all of it.
+
+**Claimed:** nothing. `v0.2-…` remains reserved for the first result.
+
+Five runs were made against a live runtime with the sweep in place. At the highest aggressor
+intensity the two views disagreed in a way that could not both be true: bucketing 400 victim
+requests by queue depth put 389 of them in one bin with p50 27ms and p95 348ms, while
+bucketing the same requests by cache occupancy put 352 in a bin with p50 27ms and p95 40ms.
+
+The queue-depth bin was mixing two populations. Requests admitted against a full pool but
+before a queue had formed have queue depth zero, so they land in the same bin as requests
+admitted against an empty one, and the bin's p95 is carried by them. The table showed a
+monotonic gradient across four bins and the gradient was an artefact.
+
+- `src/align.py` now reports the within-bin spread of each variable's largest bin. Where its
+  p95 exceeds its p50 by more than 3x, the bin is annotated: the requests the variable groups
+  as unpressured are not one population, so the gradient is not attributable to it.
+- Where both views render and only one passes, the output names which variable accounts for
+  the difference and which does not, rather than leaving two tables side by side for the
+  reader to reconcile.
+- `selftest.sh` gains a fifth stage, built from the shape of the run that exposed this, which
+  fails if a non-separating variable is presented as a gradient.
+
+The distinction matters more than it looks. Both tables are arithmetically correct. Only one
+of them supports the sentence a reader would write after seeing it.
+
 ## v0.1.3-sweep — 2026-08-31
 
 **Retrieve with:** `git checkout v0.1.3-sweep`

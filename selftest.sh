@@ -184,6 +184,55 @@ print("  ok: unstable baselines were refused and the ratios disclaimed")
 PY
 
 echo
+echo "=== stage 5: a variable that does not separate the population must be called out ==="
+# Observed on a real run: bucketing by queue depth put 389 of 400 requests in one bin with
+# p50 27ms and p95 348ms, while the same requests bucketed by cache occupancy gave p50 27ms
+# and p95 40ms. The first table reads as a gradient and is not one.
+python3 - <<'PY'
+import json, pathlib, random, subprocess, sys, tempfile, time
+
+rng = random.Random(7)
+tmp = pathlib.Path(tempfile.mkdtemp()) / "run"
+tmp.mkdir(parents=True)
+t0 = 1000.0
+recs, kv, q = [], [], []
+for i in range(400):
+    hot = i >= 352
+    ttft = rng.gauss(26.6, 3) if not hot else rng.gauss(120, 60) + rng.expovariate(1 / 400)
+    recs.append({"request_id": f"victim-{i:05d}", "workload": "victim",
+                 "t_arrival": 2.0 + i * .25, "t_first_token": None, "t_complete": None,
+                 "prompt_tokens_approx": 60, "max_tokens": 64, "total_ms": 300,
+                 "ttft_ms": max(5.0, ttft), "server_request_id": f"c{i}",
+                 "status": 200, "error": None})
+for k in range(3200):
+    tm = t0 + k * .1
+    idx = int((tm - t0 - 2.0) / .25)
+    hot = 352 <= idx < 400
+    kv.append([tm, round(rng.uniform(.57, .76) if hot else rng.uniform(0, .19), 4)])
+    q.append([tm, float(rng.choice([1, 2, 3]))
+              if (not hot and rng.random() < .03) else 0.0])
+lab = 'engine="0",model_name="M"'
+json.dump({"scenario": {}, "t_run_start_epoch": time.time(),
+           "t_run_end_epoch": time.time() + 320,
+           "clock_anchor": {"t0_mono": t0, "t0_wall": time.time()}, "records": recs},
+          open(tmp / "requests.json", "w"))
+json.dump({"endpoint": "sim", "clock_anchor": {"t_mono": t0, "t_wall": time.time()},
+           "interval_s": 0.1, "samples": 3200, "scrape_errors": 0, "sampler_slips": [],
+           "series": {f"vllm:kv_cache_usage_perc{{{lab}}}": kv,
+                      f"vllm:num_requests_waiting{{{lab}}}": q},
+           "per_request_join_key": None}, open(tmp / "metrics.json", "w"))
+
+out = subprocess.run([sys.executable, "-m", "src.align", str(tmp)],
+                     capture_output=True, text=True).stdout
+if "are not one population" not in out:
+    sys.exit("SELFTEST FAILED: a variable whose largest bin mixes fast and slow requests "
+             "was presented as a gradient")
+if "accounts for the difference and" not in out:
+    sys.exit("SELFTEST FAILED: the two views were not compared")
+print("  ok: the non-separating variable was called out and the views compared")
+PY
+
+echo
 echo "Pipeline OK. runs/_selftest_report.md written."
 echo "NOTE: these are synthetic inputs and a fake runtime. The verdicts above are a test"
 echo "      of the harness, not a finding about any runtime."

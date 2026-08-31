@@ -122,6 +122,7 @@ def align(run: Path, max_gap_s: float = DEFAULT_MAX_GAP_S) -> dict:
         "views": views,
         "spread": {name: _spread(joinable, name) for name in views},
         "distinct": {name: _distinct(joinable, name) for name in views},
+        "residual": {name: _residual(b)[0] for name, b in views.items()},
         # Kept for readers of older run directories.
         "buckets": views["queue_depth"],
     }
@@ -148,6 +149,31 @@ def _spread(rows: list[dict], key: str) -> float | None:
     if not vals:
         return None
     return round(max(vals) - min(vals), 4)
+
+
+# A bin whose p95 exceeds its p50 by more than this is not one population. Where that bin
+# is the variable's own largest group, the variable has failed to separate the slow requests
+# from the fast ones and the table it produces invites the reader to attribute the difference
+# to it anyway.
+RESIDUAL_SPREAD_LIMIT = 3.0
+
+
+def _residual(buckets: list[dict]) -> tuple[float | None, list]:
+    """Within-bin spread of the largest bin: p95 / p50.
+
+    The diagnostic that distinguishes a variable which explains the latency difference from
+    one which merely correlates with part of it. Observed on a real run: bucketing by queue
+    depth put 389 of 400 requests in one bin with p50 27ms and p95 348ms, while bucketing the
+    same requests by cache occupancy put 352 in a bin with p50 27ms and p95 40ms. The second
+    variable separates the population; the first does not, and its table reads as though it
+    does.
+    """
+    if not buckets:
+        return None, []
+    big = max(buckets, key=lambda b: b["n"])
+    if not big["ttft_p50"]:
+        return None, big["bin"]
+    return round(big["ttft_p95"] / big["ttft_p50"], 2), big["bin"]
 
 
 def _bucket(rows: list[dict], key: str, n_bins: int = 4) -> list[dict]:
@@ -236,6 +262,7 @@ def format_lines(a: dict) -> list[str]:
     distinct = a.get("distinct", {})
     labels = {"queue_depth": "engine queue depth", "cache_usage": "KV cache occupancy"}
     shown = False
+    rendered: dict[str, float | None] = {}
     for key in ("queue_depth", "cache_usage"):
         buckets = views.get(key) or []
         sp = spread.get(key)
@@ -272,6 +299,29 @@ def format_lines(a: dict) -> list[str]:
             lines.append("      observations and should not be read as a percentile")
         lines.append(f"    bins are equal width over the observed range, so populations "
                      f"are uneven by design")
+
+        res, big_bin = _residual(buckets)
+        if res is not None and res > RESIDUAL_SPREAD_LIMIT:
+            lines.append(f"    NOTE: the largest bin ({big_bin[0]:g}-{big_bin[1]:g}) has "
+                         f"p95/p50 = {res:.1f}. Requests this variable groups together as")
+            lines.append("      unpressured are not one population: it has not separated the")
+            lines.append("      slow requests from the fast ones, and the gradient above is")
+            lines.append("      not attributable to it.")
+            rendered[key] = res
+        else:
+            rendered[key] = res
+
+    usable = {k: v for k, v in rendered.items()
+              if v is not None and v <= RESIDUAL_SPREAD_LIMIT}
+    if len(rendered) > 1 and usable and len(usable) < len(rendered):
+        keep = min(usable, key=usable.get)
+        drop = [k for k in rendered if k not in usable]
+        lines.append(f"  Of the two, {labels[keep]} accounts for the difference and "
+                     f"{', '.join(labels[k] for k in drop)} does not.")
+    elif len(usable) > 1:
+        keep = min(usable, key=usable.get)
+        lines.append(f"  Both variables separate the population; {labels[keep]} does so more "
+                     f"cleanly (lower within-bin spread).")
 
     if not shown:
         lines.append("  no candidate variable both varied and had enough joined requests to")
