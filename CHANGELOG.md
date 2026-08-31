@@ -5,6 +5,16 @@ See `VERSIONING.md` for what the version numbers mean.
 
 <!-- Add new entries directly below this line. -->
 
+## v0.1-preregistration — 2026-08-31
+
+**DOI:** [DOI pending Zenodo archive]  
+**Retrieve with:** `git checkout v0.1-preregistration`
+
+Pre-registration of method and evaluation design
+
+**Claimed:** [state what this version claims, and what it does not. If a hypothesis was falsified, say so here.]
+
+
 ## v1.0-test — 2026-08-31
 
 **DOI:** 10.5281/zenodo.9999999  
