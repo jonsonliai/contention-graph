@@ -1,17 +1,25 @@
-model: Qwen/Qwen2.5-7B-Instruct          # override with INFERENCE_MODEL
+model: Qwen/Qwen2.5-7B-Instruct         # override with INFERENCE_MODEL
 endpoint: http://localhost:8000/v1/chat/completions
-timeout_s: 300
+timeout_s: 600
 max_connections: 128
 
-# The victim workload must be identical to the one in contention.yaml, including
-# start_delay_s: the comparison is only valid if the two runs differ in exactly one respect.
+# Victim alone. The victim block below must stay identical to the one in every
+# contention_*.yaml: the comparison is only valid if the runs differ in exactly one respect.
+#
+# docs/METHOD.md requires the full curve rather than the point with the largest effect. A
+# single intensity cannot distinguish "pressure causes this" from "this intensity happens to
+# produce a number worth reporting".
+#
+# Prompt sizing, measured on the runtime under test: 1500 filler words occupied 5156 KV
+# tokens. With max_tokens on top, one aggressor holds roughly 60-90% of an 8192-token pool,
+# so they serialise and the pool stays occupied for as long as they keep arriving.
 workloads:
   victim:
-    count: 200
-    rate_per_s: 4
-    prompt_words: 60
+    count: 400
+    rate_per_s: 4               # 100s of victim traffic
+    prompt_words: 60            # ~180 tokens
     max_tokens: 64
-    start_delay_s: 15
+    start_delay_s: 2            # enter once the first aggressor holds blocks
   aggressor:
     count: 0                    # baseline: victim alone
     rate_per_s: 0

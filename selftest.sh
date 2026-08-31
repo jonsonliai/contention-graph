@@ -143,6 +143,46 @@ grep -q "FAILED BY STATUS: 400=" runs/_selftest_oversize.out \
 echo "  ok: rejection was reported with status and a warning"
 
 kill $MOCK_PID 2>/dev/null || true
+
+echo
+echo "=== stage 4: the sweep must refuse an unstable baseline ==="
+# The checklist's baseline-stability gate is the one most easily satisfied by picking the
+# quieter of two runs. Guarding it here means that behaviour has to be removed deliberately
+# rather than drifting away under a deadline.
+python3 - <<'PY'
+import json, pathlib, random, subprocess, sys, tempfile, time
+
+def mk(d, extra_ms, seed):
+    rng = random.Random(seed)
+    p = pathlib.Path(d); p.mkdir(parents=True, exist_ok=True)
+    recs = [{"request_id": f"victim-{i:05d}", "workload": "victim", "t_arrival": 2 + i * .25,
+             "t_first_token": None, "t_complete": None, "prompt_tokens_approx": 60,
+             "max_tokens": 64, "total_ms": 300, "status": 200, "error": None,
+             "server_request_id": f"s{i}",
+             "ttft_ms": max(5.0, rng.gauss(28, 3)
+                            + (rng.expovariate(1 / extra_ms)
+                               if extra_ms and rng.random() < .25 else 0))}
+            for i in range(120)]
+    json.dump({"scenario": {"workloads": {"aggressor": {"count": 0, "rate_per_s": 0}}},
+               "t_run_start_epoch": time.time(), "t_run_end_epoch": time.time() + 60,
+               "clock_anchor": {"t0_mono": 1000.0, "t0_wall": time.time()},
+               "records": recs}, open(p / "requests.json", "w"))
+
+tmp = tempfile.mkdtemp()
+mk(f"{tmp}/quiet", 0, 1)
+mk(f"{tmp}/noisy", 400, 2)
+mk(f"{tmp}/point", 200, 3)
+out = subprocess.run([sys.executable, "-m", "src.sweep",
+                      "--baselines", f"{tmp}/quiet", f"{tmp}/noisy",
+                      "--points", f"{tmp}/point", "--out", f"{tmp}/sweep.md"],
+                     capture_output=True, text=True).stdout
+if "The baselines disagree" not in out:
+    sys.exit("SELFTEST FAILED: sweep accepted two baselines that do not agree")
+if "not evidence about" not in out:
+    sys.exit("SELFTEST FAILED: sweep did not disclaim its ratios after a failed baseline check")
+print("  ok: unstable baselines were refused and the ratios disclaimed")
+PY
+
 echo
 echo "Pipeline OK. runs/_selftest_report.md written."
 echo "NOTE: these are synthetic inputs and a fake runtime. The verdicts above are a test"

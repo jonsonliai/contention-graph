@@ -5,6 +5,38 @@ See `VERSIONING.md` for what the version numbers mean.
 
 <!-- Add new entries directly below this line. -->
 
+## v0.1.3-sweep — 2026-08-31
+
+**Retrieve with:** `git checkout v0.1.3-sweep`
+
+The two checks the publication checklist requires and the harness could not perform.
+
+**Claimed:** nothing. `v0.2-…` remains reserved for the first result.
+
+`docs/provenance/PUBLICATION_CHECKLIST.md` requires, before any result is published, two
+consecutive baseline runs whose p95 agree and more than one aggressor intensity. Three
+exploratory runs had been made against a live runtime and neither condition had been met:
+each round used one baseline and one intensity. Publishing on that basis would have
+contradicted this repository's own stated standard, which is a worse position than having no
+result — a reader who checks the checklist against the release finds the gap immediately.
+
+- `scenarios/contention_{low,mid,high}.yaml`: the intensity sweep. The victim workload is
+  byte-identical across all three and against `baseline.yaml`, so the sweep varies one thing.
+  `contention.yaml` is retained as an alias of the mid point.
+- `src/sweep.py`: reports baseline agreement and the degradation curve. Where the two
+  baselines disagree by more than 1.25x it says the environment was too noisy for the
+  measurement and disclaims the ratios, rather than leaving the quieter baseline available
+  to be chosen. It also reports how many aggressor requests were actually served at each
+  point, since a point whose aggressors were not served applied less pressure than its label.
+- `selftest.sh` gains a fourth stage asserting that refusal. The baseline gate is the one
+  most easily satisfied by picking the better of two runs; guarding it means that behaviour
+  has to be removed deliberately rather than drifting away under a deadline.
+
+Also: the victim workload across all scenarios is now 400 requests entering 2s after the
+aggressors, rather than 200 entering after 15s. In the earlier configuration the aggressors
+had drained before the victim arrived, so most victim requests met an empty pool and the
+observed p95 difference had nothing in the captured metrics to attribute it to.
+
 ## v0.1.2-tracing-and-attribution — 2026-08-31
 
 **Retrieve with:** `git checkout v0.1.2-tracing-and-attribution`

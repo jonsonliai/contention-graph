@@ -107,7 +107,12 @@ python -m src.collect --out runs/contention \
     --reconstruct          # or --residency-from, if the runtime has been patched
 
 # 4. Analysis: does the victim degrade, and is the cause in the victim's trace?
-python -m src.analyze runs/baseline runs/contention
+python -m src.analyze runs/baseline_a runs/contention_mid
+
+# 5. The sweep. Two baselines and more than one aggressor intensity are required before
+#    a result is published; see docs/provenance/PUBLICATION_CHECKLIST.md.
+python -m src.sweep --baselines runs/baseline_a runs/baseline_b \
+                    --points runs/contention_low runs/contention_mid runs/contention_high
 ```
 
 **The metrics scrape has to overlap the workload.** It polls a live endpoint, so a scrape
@@ -149,9 +154,10 @@ src/align.py              joins request timings to engine state on the shared mo
 tools/otlp_file_sink.py   OTLP/HTTP receiver writing spans as JSON lines, in place of a Collector
 src/contention_graph.py   the proposed residency record and the attribution join
 src/analyze.py            hypothesis evaluation, report generation
+src/sweep.py              baseline stability and the intensity curve
 selftest.sh               zero-GPU validation of the whole pipeline
 tests/mock_vllm.py        fake runtime used by the loopback stage of the self-test
-scenarios/*.yaml          workload definitions
+scenarios/*.yaml          workload definitions; contention_{low,mid,high} are the sweep
 docs/WHITEPAPER.md        the argument, the definition, the proposed conventions
 docs/figures/             figures, as PNG and vector PDF
 docs/METHOD.md            experiment design, threats to validity

@@ -21,8 +21,8 @@ workloads:
     max_tokens: 64
     start_delay_s: 2            # enter once the first aggressor holds blocks
   aggressor:
-    count: 12
-    rate_per_s: 0.5
+    count: 6
+    rate_per_s: 0.25
     prompt_words: 1500
-    max_tokens: 2048
+    max_tokens: 1024
     start_delay_s: 0
