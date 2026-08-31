@@ -86,23 +86,78 @@ def _flatten_attrs(attrs: list[dict]) -> dict:
     return out
 
 
-def normalize_request_id(spans: list[dict], extra_keys: tuple[str, ...] = ()) -> None:
-    """Ensure every span carries `request.id`.
+ID_CANDIDATES = ("request.id", "http.request.header.x_request_id", "x-request-id",
+                 "gen_ai.request.id", "gen_ai.response.id", "vllm.request_id",
+                 "llm.request.id")
 
-    If the runtime does not propagate X-Request-Id onto the span, find its own request-id
-    attribute and add its name to --request-id-key. Without this the H2 test cannot select
-    victim spans and will report INCONCLUSIVE rather than a result.
+
+def normalize_request_id(spans: list[dict], extra_keys: tuple[str, ...] = (),
+                         server_to_client: dict[str, str] | None = None) -> dict:
+    """Ensure every span carries `request.id`, and make it the *client's* id where possible.
+
+    Two problems, and they are different:
+
+    1. The attribute has a different name. Runtimes disagree; ID_CANDIDATES covers the ones
+       seen so far and --request-id-key adds another.
+
+    2. The attribute has a different *value*. A runtime labels its spans with the id it
+       assigned (`chatcmpl-...`), not with the client's X-Request-Id, unless it has been
+       configured to propagate that header. The names then match and the values never do,
+       so victim selection silently returns nothing and H2 reports INCONCLUSIVE — which
+       reads like a limitation of the experiment rather than a mapping that was not applied.
+
+    `server_to_client` closes the second gap using the server ids that `src/workload.py`
+    recorded from the response stream. Where a span's id is found there it is rewritten to
+    the client's id; where it is not, the span keeps whatever it had.
+
+    Returns a small report so the caller can say which path was taken, because "we joined on
+    the propagated header" and "we joined through the response id" are different claims
+    about what the runtime does.
     """
-    candidates = ("request.id", "http.request.header.x_request_id", "x-request-id",
-                  "gen_ai.request.id", "vllm.request_id") + extra_keys
-    for s in spans:
-        a = s["attributes"]
+    candidates = ID_CANDIDATES + extra_keys
+    server_to_client = server_to_client or {}
+    report = {"spans": len(spans), "with_id": 0, "mapped_via_response_id": 0,
+              "direct_client_id": 0, "unmatched": 0, "attribute_used": None}
+    used: dict[str, int] = {}
+
+    for sp in spans:
+        a = sp["attributes"]
+        found = None
         if "request.id" in a:
+            found = "request.id"
+        else:
+            for k in candidates:
+                if k in a:
+                    a["request.id"] = a[k]
+                    found = k
+                    break
+        if found is None:
+            report["unmatched"] += 1
             continue
-        for k in candidates:
-            if k in a:
-                a["request.id"] = a[k]
-                break
+        used[found] = used.get(found, 0) + 1
+        report["with_id"] += 1
+
+        rid = str(a["request.id"])
+        if rid in server_to_client:
+            a["request.id.server"] = rid
+            a["request.id"] = server_to_client[rid]
+            report["mapped_via_response_id"] += 1
+        elif rid.split("-")[0] in ("victim", "aggressor"):
+            report["direct_client_id"] += 1
+
+    if used:
+        report["attribute_used"] = max(used, key=used.get)
+    return report
+
+
+def server_id_map(requests_json: Path) -> dict[str, str]:
+    """server-assigned id -> client id, from a completed workload run."""
+    if not requests_json.exists():
+        return {}
+    d = json.loads(requests_json.read_text())
+    return {r["server_request_id"]: r["request_id"]
+            for r in d.get("records", [])
+            if r.get("server_request_id")}
 
 
 # ----------------------------------------------------------------- metrics
@@ -378,13 +433,24 @@ def main() -> None:
 
     if args.spans_from:
         spans = parse_spans(Path(args.spans_from))
-        normalize_request_id(spans, tuple(k for k in [args.request_id_key] if k))
+        id_map = server_id_map(out / "requests.json")
+        rep = normalize_request_id(
+            spans, tuple(k for k in [args.request_id_key] if k), id_map)
         (out / "spans.json").write_text(json.dumps(spans, indent=2))
-        n_id = sum(1 for s in spans if "request.id" in s["attributes"])
-        print(f"spans: {len(spans)} parsed, {n_id} carry request.id")
-        if spans and not n_id:
+        (out / "span_id_report.json").write_text(json.dumps(rep, indent=2))
+
+        print(f"spans: {rep['spans']} parsed, {rep['with_id']} carry a request id "
+              f"(attribute: {rep['attribute_used'] or 'none'})")
+        print(f"  joined to client ids: {rep['direct_client_id']} directly, "
+              f"{rep['mapped_via_response_id']} via the recorded response id")
+        if spans and not rep["with_id"]:
             print("  WARNING: no span carries a request id. H2 cannot be evaluated.")
             print("  Find the runtime's own request-id attribute and pass --request-id-key.")
+        elif rep["with_id"] and not (rep["direct_client_id"]
+                                     or rep["mapped_via_response_id"]):
+            print("  WARNING: spans carry an id, but none of them match a request from this")
+            print("  run. Either the spans are from a different run, or requests.json was")
+            print("  written without server_request_id (re-run src.workload).")
 
     if args.metrics_url and args.scrape_seconds > 0:
         m = scrape(args.metrics_url, args.scrape_seconds, args.scrape_interval)

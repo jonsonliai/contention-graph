@@ -5,6 +5,53 @@ See `VERSIONING.md` for what the version numbers mean.
 
 <!-- Add new entries directly below this line. -->
 
+## v0.1.2-tracing-and-attribution — 2026-08-31
+
+**Retrieve with:** `git checkout v0.1.2-tracing-and-attribution`
+
+Trace capture, and an analysis that declines to attribute what it cannot observe.
+
+**Claimed:** nothing. Two exploratory runs were made against a live runtime and are not
+published as results; what they produced was a list of defects in this harness, fixed here.
+`v0.2-…` remains reserved for the first result.
+
+**Trace capture, so that H2 can be evaluated at all.**
+
+- `tools/otlp_file_sink.py`: an OTLP/HTTP receiver that decodes the protobuf, renders trace
+  and span ids as hex per the OTLP/JSON specification, and appends each batch to a file in
+  the format `src/collect.py --spans-from` reads. A full OpenTelemetry Collector does the
+  same job; this exists so the reproduction path does not require one.
+- **The request id is the part that breaks.** A runtime labels its spans with the id it
+  assigned, not with the client's `X-Request-Id`. The attribute names then match and the
+  values never do, victim selection returns nothing, and H2 reports INCONCLUSIVE — which
+  reads like a limitation of the experiment rather than a mapping that was not applied.
+  `src/workload.py` now records the id from the response stream and `src/collect.py` uses it
+  to rewrite span ids, reporting which path was taken.
+- `selftest.sh` stage 2 now carries a span end to end — protobuf, HTTP, decode, id
+  normalisation — and asserts that H2 returns a verdict rather than INCONCLUSIVE.
+
+**Attribution that reports what varied rather than assuming it.**
+
+- `src/align.py` bucketed on queue depth, which assumed pressure would appear as queueing.
+  Against a constrained pool it appears as cache occupancy oscillating on a sub-second
+  scale while the queue stays empty. It now reports the spread of each candidate variable,
+  presents a view per variable, and declines to bucket one that did not move.
+- Binning changed from equal-count to **equal-width over the observed range**. The occupancy
+  distribution is not continuous — most requests meet a nearly empty pool and a minority
+  meet a full one — so quartiles put three of four boundaries inside the baseline and
+  produced repeated bucket labels next to differing latencies. That reads as a gradient and
+  is an artefact of the binning. Uneven bin populations are reported rather than hidden,
+  and bins too thin for a stable p95 are marked.
+- Joinability no longer requires a queue gauge specifically; a runtime exposing occupancy
+  but no queue depth is still observable.
+- A run where no candidate variable both varied and had enough joined requests now says so,
+  and says that H1 should be read as unexplained rather than established.
+
+Also: `docs/METHOD.md` gains two threats to validity found by running the thing — sampling
+resolution below the oscillation being measured, and victim and aggressor windows that do
+not overlap. `docs/RUNTIME_SETUP.md` gains the tracing procedure and the request-id
+pitfall.
+
 ## v0.1.1-harness-fixes — 2026-08-31
 
 **Retrieve with:** `git checkout v0.1.1-harness-fixes`

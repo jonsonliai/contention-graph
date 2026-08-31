@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import threading
 import time
+import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 STATE = {
@@ -75,6 +78,57 @@ def metrics_text() -> str:
     return "\n".join(lines) + "\n"
 
 
+def emit_span(server_id: str, t_start_ns: int, t_end_ns: int,
+              prompt_tokens: int, completion_tokens: int) -> None:
+    """Push one OTLP span, the way a runtime with tracing enabled would.
+
+    Deliberately labelled with the *server's* id and carrying only the attribute set a
+    compliant runtime emits today. Nothing here names a co-resident request, an eviction, or
+    cache pressure — the self-test would be worthless if the fixture quietly supplied the
+    thing H2 exists to look for.
+    """
+    if not CFG.otlp_endpoint:
+        return
+    try:
+        from google.protobuf.json_format import MessageToDict  # noqa: F401  (shape check)
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceRequest)
+        from opentelemetry.proto.common.v1 import common_pb2
+        from opentelemetry.proto.resource.v1 import resource_pb2
+        from opentelemetry.proto.trace.v1 import trace_pb2
+    except ImportError:
+        return
+
+    def sv(k, v):
+        return common_pb2.KeyValue(key=k, value=common_pb2.AnyValue(string_value=str(v)))
+
+    def iv(k, v):
+        return common_pb2.KeyValue(key=k, value=common_pb2.AnyValue(int_value=int(v)))
+
+    span = trace_pb2.Span(
+        name="llm_request",
+        trace_id=uuid.uuid4().bytes,
+        span_id=uuid.uuid4().bytes[:8],
+        start_time_unix_nano=t_start_ns,
+        end_time_unix_nano=t_end_ns,
+        attributes=[
+            sv("gen_ai.request.id", server_id),
+            sv("gen_ai.request.model", MODEL),
+            iv("gen_ai.usage.input_tokens", prompt_tokens),
+            iv("gen_ai.usage.output_tokens", completion_tokens),
+            sv("gen_ai.response.finish_reasons", "length"),
+        ])
+    req = ExportTraceServiceRequest(resource_spans=[trace_pb2.ResourceSpans(
+        resource=resource_pb2.Resource(attributes=[sv("service.name", "mock-vllm")]),
+        scope_spans=[trace_pb2.ScopeSpans(spans=[span])])])
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            CFG.otlp_endpoint, data=req.SerializeToString(),
+            headers={"Content-Type": "application/x-protobuf"}), timeout=5)
+    except Exception as exc:  # noqa: BLE001
+        print(f"mock_vllm: span export failed: {exc}", flush=True)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -126,6 +180,8 @@ class Handler(BaseHTTPRequestHandler):
         if not acquired:
             self.send_error(503, "no capacity")
             return
+        server_id = ("chatcmpl-" if chat else "cmpl-") + uuid.uuid4().hex[:16]
+        t_start_ns = time.time_ns()
         bump("running", 1)
         with LOCK:
             STATE["kv"] = min(1.0, STATE["running"] / CFG.slots * random.uniform(.75, .98))
@@ -142,19 +198,19 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(CFG.token_ms / 1000.0)
                 if chat:
                     chunk = {
-                        "id": "chatcmpl-mock", "object": "chat.completion.chunk",
+                        "id": server_id, "object": "chat.completion.chunk",
                         "choices": [{"index": 0, "delta": {"content": f" t{i}"},
                                      "finish_reason": None}],
                     }
                 else:
                     chunk = {
-                        "id": "cmpl-mock", "object": "text_completion",
+                        "id": server_id, "object": "text_completion",
                         "choices": [{"index": 0, "text": f" t{i}", "finish_reason": None}],
                     }
                 self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
                 self.wfile.flush()
             usage = {
-                "id": "cmpl-mock", "object": "text_completion", "choices": [],
+                "id": server_id, "object": "text_completion", "choices": [],
                 "usage": {"prompt_tokens": prompt_len,
                           "completion_tokens": n_tokens,
                           "total_tokens": prompt_len + n_tokens},
@@ -164,6 +220,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
             bump("prompt_tokens", prompt_len)
             bump("gen_tokens", n_tokens)
+            emit_span(server_id, t_start_ns, time.time_ns(), prompt_len, n_tokens)
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
@@ -185,6 +242,8 @@ def main() -> int:
     p.add_argument("--max-model-len", type=int, default=8192,
                    help="reject prompts longer than this, as a real runtime would")
     p.add_argument("--model", default="mock/model")
+    p.add_argument("--otlp-endpoint", default=os.environ.get("MOCK_OTLP_ENDPOINT", ""),
+                   help="OTLP/HTTP traces URL; spans are emitted only when set")
     CFG = p.parse_args()
     MODEL = CFG.model
     SLOTS = threading.Semaphore(CFG.slots)

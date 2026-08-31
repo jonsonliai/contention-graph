@@ -40,6 +40,11 @@ class RequestRecord:
     ttft_ms: float | None
     total_ms: float | None
     status: int | None = None
+    # The id the server assigned. The runtime labels its spans with its own request id, not
+    # with the client's X-Request-Id, unless it has been configured to propagate the header.
+    # Recording the server's id here gives the analysis a join key either way; without it,
+    # victim spans cannot be selected and H2 reports INCONCLUSIVE.
+    server_request_id: str | None = None
     error: str | None = None
     error_body: str | None = None
 
@@ -120,6 +125,11 @@ async def _one(client: httpx.AsyncClient, cfg: dict, wl: str, idx: int,
                 if rec.t_first_token is None:
                     rec.t_first_token = time.monotonic() - t0
                     rec.ttft_ms = (rec.t_first_token - rec.t_arrival) * 1000
+                if rec.server_request_id is None:
+                    try:
+                        rec.server_request_id = json.loads(line[6:]).get("id")
+                    except (json.JSONDecodeError, AttributeError):
+                        pass
         rec.t_complete = time.monotonic() - t0
         rec.total_ms = (rec.t_complete - rec.t_arrival) * 1000
     except Exception as exc:                      # noqa: BLE001 - recorded, not raised

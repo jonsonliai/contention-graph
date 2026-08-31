@@ -1,2 +1,6 @@
 httpx>=0.27
 pyyaml>=6.0
+# Needed only to receive traces (tools/otlp_file_sink.py) and to emit them from the test
+# fixture. The analysis itself reads spans from a file and has no OTel dependency.
+opentelemetry-proto>=1.26
+protobuf>=4.25

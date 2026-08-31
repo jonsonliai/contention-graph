@@ -55,6 +55,8 @@ The value used is recorded in the provenance block of every result.
 | Cherry-picked intensity | Sweep the aggressor rate and report the full curve, not the point that shows the largest effect |
 | Aggressor requests rejected rather than served | Prompt length is sized against the runtime's `--max-model-len` before the run; `src/workload.py` records the HTTP status of every request and warns when an entire workload was rejected. A rejected aggressor applies no pressure while the run still completes and the metrics still look clean |
 | Metrics sampled outside the load window | Collection runs concurrently with the workload; `src/collect.py` warns when every captured series was constant, which is what an idle-window scrape produces |
+| Pressure exists but is invisible at the sampling interval | Cache occupancy under a constrained pool oscillates on a sub-second scale. A sampler slower than the oscillation reports a plausible mean and no variation, and the alignment then attributes nothing. `src/align.py` reports the spread of each candidate variable and refuses to bucket on one that did not move, rather than printing four identical labels |
+| Victim and aggressor windows do not overlap | The victim's arrival window must lie inside the aggressor's. A victim delayed until after the aggressors have drained is measured against an empty pool, and the resulting p95 difference — if any — is not attributable to occupancy |
 
 ## What a negative result would look like
 

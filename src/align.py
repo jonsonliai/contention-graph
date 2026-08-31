@@ -104,11 +104,14 @@ def align(run: Path, max_gap_s: float = DEFAULT_MAX_GAP_S) -> dict:
             gaps.append(gap)
             row["at"][name] = value if gap <= max_gap_s else None
         row["max_gap_s"] = round(max(gaps), 3) if gaps else None
-        if row["at"].get("queue_depth") is None:
+        # Joined means *some* engine state was attached, not specifically a queue gauge:
+        # a runtime that exposes occupancy but no queue depth is still observable.
+        if not any(v is not None for v in row["at"].values()):
             unjoined += 1
         rows.append(row)
 
-    joinable = [r for r in rows if r["at"].get("queue_depth") is not None]
+    joinable = [r for r in rows if any(v is not None for v in r["at"].values())]
+    views = {name: _bucket(joinable, name) for name in ("queue_depth", "cache_usage")}
     return {
         "status": "OK" if joinable else "NOT JOINABLE",
         "n_rows": len(rows),
@@ -116,31 +119,87 @@ def align(run: Path, max_gap_s: float = DEFAULT_MAX_GAP_S) -> dict:
         "n_unjoined": unjoined,
         "max_gap_s": max_gap_s,
         "rows": rows,
-        "buckets": _bucket(joinable),
+        "views": views,
+        "spread": {name: _spread(joinable, name) for name in views},
+        "distinct": {name: _distinct(joinable, name) for name in views},
+        # Kept for readers of older run directories.
+        "buckets": views["queue_depth"],
     }
 
 
-def _bucket(rows: list[dict], n_buckets: int = 4) -> list[dict]:
-    """Group requests by queue depth at admission and report the latency each group met."""
-    if len(rows) < n_buckets * 4:
+def _distinct(rows: list[dict], key: str) -> int:
+    """How many different values the variable actually took.
+
+    Spread alone is not enough. A variable observed as 0,0,0,...,1 has a spread of 1 and
+    two distinct values; split into four quartiles it yields three identical bucket labels
+    and one that differs, which looks like a gradient and is not one.
+    """
+    return len({r["at"][key] for r in rows if r["at"].get(key) is not None})
+
+
+def _spread(rows: list[dict], key: str) -> float | None:
+    """Range of a candidate explanatory variable across the run.
+
+    A variable that did not move cannot explain a latency difference, however plausible it
+    is as a mechanism. Reporting the spread lets the reader see which of the two views is
+    worth reading rather than having to infer it from identical bucket labels.
+    """
+    vals = [r["at"][key] for r in rows if r["at"].get(key) is not None]
+    if not vals:
+        return None
+    return round(max(vals) - min(vals), 4)
+
+
+def _bucket(rows: list[dict], key: str, n_bins: int = 4) -> list[dict]:
+    """Group requests into equal-width bins over the observed range of `key`.
+
+    Equal *width*, not equal count. Under a constrained cache the occupancy distribution is
+    not continuous: most requests are admitted against a nearly empty pool and a minority
+    against a full one. Quartiles of such a sample put three of the four boundaries inside
+    the baseline, producing bucket labels like `0.030-0.030` three times over, next to
+    latencies that differ — which reads as a gradient and is an artefact of the binning.
+
+    Equal-width bins separate the baseline from the spike, and the resulting uneven bin
+    populations are themselves informative: `n=352` against a near-empty pool and `n=48`
+    against a full one is a description of what the run actually did.
+
+    Empty bins are dropped rather than shown, and a bin with too few requests to give a
+    stable p95 is marked so the reader does not read one.
+    """
+    rows = [r for r in rows if r["at"].get(key) is not None]
+    if len(rows) < 8:
         return []
-    rows = sorted(rows, key=lambda r: r["at"]["queue_depth"])
-    n, size = len(rows), len(rows) // n_buckets
+    vals_all = [r["at"][key] for r in rows]
+    lo_all, hi_all = min(vals_all), max(vals_all)
+    if hi_all == lo_all:
+        return []
+    width = (hi_all - lo_all) / n_bins
+    other = "cache_usage" if key == "queue_depth" else "queue_depth"
+
     out = []
-    for b in range(n_buckets):
-        lo, hi = b * size, (n if b == n_buckets - 1 else (b + 1) * size)
-        chunk = rows[lo:hi]
+    for b in range(n_bins):
+        lo = lo_all + b * width
+        hi = hi_all if b == n_bins - 1 else lo_all + (b + 1) * width
+        chunk = [r for r in rows
+                 if lo <= r["at"][key] <= hi] if b == n_bins - 1 else [
+                 r for r in rows if lo <= r["at"][key] < hi]
         if not chunk:
             continue
-        depths = [r["at"]["queue_depth"] for r in chunk]
+        vals = sorted(r["at"][key] for r in chunk)
         ttfts = sorted(r["ttft_ms"] for r in chunk)
-        cache = [r["at"]["cache_usage"] for r in chunk if r["at"].get("cache_usage") is not None]
+        companion = [r["at"][other] for r in chunk if r["at"].get(other) is not None]
         out.append({
-            "queue_depth_range": [depths[0], depths[-1]],
+            "key": key,
+            "bin": [round(lo, 4), round(hi, 4)],
+            "range": [vals[0], vals[-1]],
             "n": len(chunk),
             "ttft_p50": _pct(ttfts, 50),
             "ttft_p95": _pct(ttfts, 95),
-            "cache_usage_median": round(st.median(cache), 3) if cache else None,
+            # A p95 over fewer than 20 samples is one or two observations; naming the
+            # threshold here keeps it out of the reader's head.
+            "p95_reliable": len(chunk) >= 20,
+            "companion": other,
+            "companion_median": round(st.median(companion), 3) if companion else None,
         })
     return out
 
@@ -167,22 +226,70 @@ def format_lines(a: dict) -> list[str]:
 
     lines = [f"alignment: {a['n_joined']}/{a['n_rows']} victim requests joined to a metric "
              f"sample within {a['max_gap_s']}s"]
-    if not a["buckets"]:
-        lines.append("  too few joined requests to bucket")
-        return lines
-    lines.append("  victim TTFT by engine queue depth at admission:")
-    lines.append(f"  {'queue depth':>14} {'n':>5} {'TTFT p50':>10} {'TTFT p95':>10} "
-                 f"{'cache med':>10}")
-    for b in a["buckets"]:
-        lo, hi = b["queue_depth_range"]
-        cache = "n/a" if b["cache_usage_median"] is None else f"{b['cache_usage_median']:.3f}"
-        lines.append(f"  {f'{lo:g}-{hi:g}':>14} {b['n']:>5} {b['ttft_p50']:>10.1f} "
-                     f"{b['ttft_p95']:>10.1f} {cache:>10}")
+
+    spread = a.get("spread", {})
+    lines.append("  spread of each candidate variable over the run: "
+                 + ", ".join(f"{k}={'n/a' if v is None else v}"
+                             for k, v in sorted(spread.items())))
+
+    views = a.get("views") or {"queue_depth": a.get("buckets", [])}
+    distinct = a.get("distinct", {})
+    labels = {"queue_depth": "engine queue depth", "cache_usage": "KV cache occupancy"}
+    shown = False
+    for key in ("queue_depth", "cache_usage"):
+        buckets = views.get(key) or []
+        sp = spread.get(key)
+        nd = distinct.get(key, 0)
+        if sp is None:
+            # The series was not among those the collector captured. Different from a
+            # variable that was captured and did not move, and the reader needs to know
+            # which: one is a property of the run, the other of the instrumentation.
+            lines.append(f"  {labels[key]}: not present in the captured metrics")
+            continue
+        if sp == 0 or nd < 2:
+            lines.append(f"  {labels[key]} did not vary over the run; no view on it")
+            continue
+        if not buckets:
+            lines.append(f"  {labels[key]} varied, but too few joined requests to bin")
+            continue
+        shown = True
+        lines.append(f"  victim TTFT by {labels[key]} at admission:")
+        head = "queue depth" if key == "queue_depth" else "KV occupancy"
+        comp = "KV med" if key == "queue_depth" else "queue med"
+        lines.append(f"  {head:>14} {'n':>5} {'TTFT p50':>10} {'TTFT p95':>10} {comp:>10}")
+        thin = False
+        for b in buckets:
+            lo, hi = b["bin"]
+            fmt = "{:g}-{:g}" if key == "queue_depth" else "{:.3f}-{:.3f}"
+            cm = ("n/a" if b["companion_median"] is None
+                  else f"{b['companion_median']:.3f}")
+            mark = "" if b["p95_reliable"] else "  *"
+            thin = thin or not b["p95_reliable"]
+            lines.append(f"  {fmt.format(lo, hi):>14} {b['n']:>5} {b['ttft_p50']:>10.1f} "
+                         f"{b['ttft_p95']:>10.1f} {cm:>10}{mark}")
+        if thin:
+            lines.append("    * fewer than 20 requests in this bin; its p95 is one or two")
+            lines.append("      observations and should not be read as a percentile")
+        lines.append(f"    bins are equal width over the observed range, so populations "
+                     f"are uneven by design")
+
+    if not shown:
+        lines.append("  no candidate variable both varied and had enough joined requests to")
+        lines.append("  bucket. The latency difference reported above is not attributable to")
+        lines.append("  anything this collector observed; treat H1 as unexplained, not as")
+        lines.append("  established, and see docs/METHOD.md on sampling resolution.")
     return lines
 
 
 def main() -> None:
     import argparse
+    import signal
+    # This prints a table people pipe into head; the default SIGPIPE handling turns that
+    # into a traceback that looks like a failure.
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    except (AttributeError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("run")
     ap.add_argument("--max-gap-s", type=float, default=DEFAULT_MAX_GAP_S)

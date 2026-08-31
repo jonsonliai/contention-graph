@@ -81,9 +81,11 @@ pip install -r requirements.txt
 # 0. Validate the harness with synthetic inputs and a local fake runtime — no GPU required.
 ./selftest.sh
 
-# 1. Start the runtime with tracing and metrics enabled.
-#    See docs/RUNTIME_SETUP.md — flags differ between runtimes and versions.
-#    Check prompt sizing in the scenario against --max-model-len before starting.
+# 1. Start the OTLP sink, then the runtime pointed at it. See docs/RUNTIME_SETUP.md;
+#    flags differ between runtimes and versions. Check prompt sizing in the scenario
+#    against --max-model-len before starting, and confirm one hand-issued request
+#    produces a span, because H2 cannot be evaluated without one.
+python3 tools/otlp_file_sink.py --out runs/otel-spans.jsonl --port 4318 &
 
 # 2. Baseline: victim workload alone. Metrics are scraped DURING the run, not after.
 python -m src.collect --out runs/baseline \
@@ -97,9 +99,11 @@ python -m src.collect --out runs/contention \
 python -m src.workload --scenario scenarios/contention.yaml --out runs/contention
 wait
 
-# 3b. Spans and the contention graph, once the run is over.
+# 3b. Spans and the contention graph, once the run is over. Span ids are joined to client
+#     ids using the response ids recorded in requests.json, so this step must come after
+#     the workload has written that file.
 python -m src.collect --out runs/contention \
-    --spans-from otel-collector-out.jsonl \
+    --spans-from runs/otel-spans.jsonl \
     --reconstruct          # or --residency-from, if the runtime has been patched
 
 # 4. Analysis: does the victim degrade, and is the cause in the victim's trace?
@@ -142,6 +146,7 @@ demonstrable rather than asserted.
 src/workload.py           victim / aggressor generators against an OpenAI-compatible endpoint
 src/collect.py            span parsing, metrics scraping, graph build, --mock mode
 src/align.py              joins request timings to engine state on the shared monotonic clock
+tools/otlp_file_sink.py   OTLP/HTTP receiver writing spans as JSON lines, in place of a Collector
 src/contention_graph.py   the proposed residency record and the attribution join
 src/analyze.py            hypothesis evaluation, report generation
 selftest.sh               zero-GPU validation of the whole pipeline
