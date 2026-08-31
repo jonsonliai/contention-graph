@@ -7,7 +7,7 @@ See `VERSIONING.md` for what the version numbers mean.
 
 ## v0.2.1-citable — 2026-08-31
 
-[![DOI](https://zenodo.org/badge/1352189306.svg)](https://doi.org/10.5281/zenodo.22205181)
+**DOI:** 10.5281/zenodo.22213982 (this version) · 10.5281/zenodo.22205181 (all versions)
 
 **Retrieve with:** `git checkout v0.2.1-citable`
 
