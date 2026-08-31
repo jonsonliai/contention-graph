@@ -1,6 +1,6 @@
 # Contention Graph: demonstrating an attribution gap in LLM inference telemetry
 
-
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22205181.svg)](https://doi.org/10.5281/zenodo.22205181)
 
 A reproducible experiment showing that when one request degrades another through shared
 KV-cache pressure, **per-request tracing records the symptom and does not record the cause** —
