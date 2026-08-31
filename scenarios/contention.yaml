@@ -1,0 +1,17 @@
+model: Qwen/Qwen2.5-7B-Instruct
+endpoint: http://localhost:8000/v1/chat/completions
+timeout_s: 300
+max_connections: 128
+workloads:
+  victim:
+    count: 200
+    rate_per_s: 4
+    prompt_words: 60
+    max_tokens: 64
+    start_delay_s: 15           # let the aggressor establish cache occupancy first
+  aggressor:
+    count: 24
+    rate_per_s: 0.8
+    prompt_words: 6000          # long context: many KV blocks, held for a long time
+    max_tokens: 1024
+    start_delay_s: 0

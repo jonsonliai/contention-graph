@@ -1,0 +1,16 @@
+model: Qwen/Qwen2.5-7B-Instruct          # an open-weight model that fits the available GPU
+endpoint: http://localhost:8000/v1/chat/completions
+timeout_s: 300
+max_connections: 128
+workloads:
+  victim:
+    count: 200
+    rate_per_s: 4
+    prompt_words: 60
+    max_tokens: 64
+    start_delay_s: 0
+  aggressor:
+    count: 0                    # baseline: victim alone
+    rate_per_s: 0
+    prompt_words: 0
+    max_tokens: 0

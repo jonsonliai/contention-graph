@@ -1,0 +1,11 @@
+# Run outputs are never committed. Results are published in releases with recorded
+# provenance, not carried in the working tree — and synthetic self-test output must
+# never be mistaken for a finding.
+runs/*
+!runs/.gitkeep
+
+__pycache__/
+*.pyc
+.DS_Store
+.env
+*.local
