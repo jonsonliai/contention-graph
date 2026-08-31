@@ -13,6 +13,7 @@ import json
 import statistics as st
 from pathlib import Path
 
+from .align import align, format_lines
 from .contention_graph import ContentionGraph
 
 # Fragments that, if found in any victim attribute or span-event name, falsify H2 — that is,
@@ -37,7 +38,7 @@ def _pct(xs: list[float], p: float) -> float:
 
 
 def _load(run: Path) -> dict:
-    d = {"requests": json.loads((run / "requests.json").read_text())}
+    d = {"_path": run, "requests": json.loads((run / "requests.json").read_text())}
     for name, key in (("spans.json", "spans"), ("metrics.json", "metrics")):
         f = run / name
         d[key] = json.loads(f.read_text()) if f.exists() else None
@@ -70,6 +71,15 @@ def h1(base: dict, cont: dict) -> tuple[str, list[str]]:
     ]
     ratio = _pct(c, 95) / _pct(b, 95) if _pct(b, 95) else float("nan")
     lines.append(f"p95 ratio contention/baseline = {ratio:.2f}x")
+
+    # Whether the degradation tracks engine state at the moment each request was admitted.
+    # A rise in p95 on its own is consistent with the machine merely being busy; a rise that
+    # follows queue depth and cache occupancy is consistent with contention. Neither is
+    # visible in the victim's own span, which is what H2 goes on to show.
+    if "_path" in cont:
+        lines.append("")
+        lines += format_lines(align(cont["_path"]))
+
     return ("NOT FALSIFIED" if ratio > 1.2 else "FALSIFIED"), lines
 
 

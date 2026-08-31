@@ -1,0 +1,20 @@
+# Tiny workload for the loopback stage of selftest.sh. Not an experiment configuration:
+# sized to finish in seconds against tests/mock_vllm.py, whose simulated context window is
+# 2000 tokens and whose generation is a fixed sleep per token.
+model: mock/model
+endpoint: http://127.0.0.1:8123/v1/chat/completions
+timeout_s: 60
+max_connections: 64
+workloads:
+  victim:
+    count: 60
+    rate_per_s: 20
+    prompt_words: 20
+    max_tokens: 12
+    start_delay_s: 2
+  aggressor:
+    count: 8
+    rate_per_s: 4
+    prompt_words: 400
+    max_tokens: 24
+    start_delay_s: 0

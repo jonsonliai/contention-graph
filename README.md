@@ -78,27 +78,41 @@ runtime with OTLP tracing enabled and a Prometheus metrics endpoint.
 ```bash
 pip install -r requirements.txt
 
-# 1. Start the runtime with tracing and metrics enabled.
-#    See docs/RUNTIME_SETUP.md — flags differ between runtimes and versions.
-
-# 0. Validate the harness with synthetic inputs first — no GPU required.
+# 0. Validate the harness with synthetic inputs and a local fake runtime — no GPU required.
 ./selftest.sh
 
-# 2. Baseline: victim workload alone.
+# 1. Start the runtime with tracing and metrics enabled.
+#    See docs/RUNTIME_SETUP.md — flags differ between runtimes and versions.
+#    Check prompt sizing in the scenario against --max-model-len before starting.
+
+# 2. Baseline: victim workload alone. Metrics are scraped DURING the run, not after.
+python -m src.collect --out runs/baseline \
+    --metrics-url http://localhost:8000/metrics --scrape-seconds 120 &
 python -m src.workload --scenario scenarios/baseline.yaml --out runs/baseline
+wait
 
-# 3. Contention: victim plus aggressor.
+# 3. Contention: victim plus aggressor. Same structure.
+python -m src.collect --out runs/contention \
+    --metrics-url http://localhost:8000/metrics --scrape-seconds 180 &
 python -m src.workload --scenario scenarios/contention.yaml --out runs/contention
+wait
 
-# 3b. Capture the server side for the same window.
+# 3b. Spans and the contention graph, once the run is over.
 python -m src.collect --out runs/contention \
     --spans-from otel-collector-out.jsonl \
-    --metrics-url http://localhost:8000/metrics --scrape-seconds 120 \
     --reconstruct          # or --residency-from, if the runtime has been patched
 
 # 4. Analysis: does the victim degrade, and is the cause in the victim's trace?
 python -m src.analyze runs/baseline runs/contention
 ```
+
+**The metrics scrape has to overlap the workload.** It polls a live endpoint, so a scrape
+started after the workload has finished samples an idle server: every series is flat, and
+the result is indistinguishable from a runtime that reported nothing under load. `src.collect`
+warns when every series it captured was constant, but the run still has to be repeated.
+
+Set `--scrape-seconds` longer than the workload takes; the scrape stopping early is the same
+failure in a smaller form.
 
 `analyze` prints a verdict on each hypothesis and writes `runs/report.md`.
 
@@ -127,9 +141,11 @@ demonstrable rather than asserted.
 ```
 src/workload.py           victim / aggressor generators against an OpenAI-compatible endpoint
 src/collect.py            span parsing, metrics scraping, graph build, --mock mode
-selftest.sh               zero-GPU validation of the whole pipeline
+src/align.py              joins request timings to engine state on the shared monotonic clock
 src/contention_graph.py   the proposed residency record and the attribution join
 src/analyze.py            hypothesis evaluation, report generation
+selftest.sh               zero-GPU validation of the whole pipeline
+tests/mock_vllm.py        fake runtime used by the loopback stage of the self-test
 scenarios/*.yaml          workload definitions
 docs/WHITEPAPER.md        the argument, the definition, the proposed conventions
 docs/figures/             figures, as PNG and vector PDF

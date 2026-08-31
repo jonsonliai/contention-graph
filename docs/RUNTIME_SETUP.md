@@ -22,6 +22,15 @@ INCONCLUSIVE when the data was simply under a different key.
       driver version, and the commit hash of this repository
 - [ ] Run the baseline twice and confirm p95 TTFT is stable between the two; if it is not,
       the environment is too noisy for the contention result to mean anything
+- [ ] Check the aggressor prompt against `--max-model-len`. Random filler tokenises at
+      roughly one token per 2.5-3 characters, so `prompt_words * 3` is a serviceable upper
+      estimate. An oversized prompt is rejected with HTTP 400 and applies no pressure, while
+      the run completes and the metrics look clean
+- [ ] Confirm `src.collect` is running **before** `src.workload` starts and is still running
+      when it finishes. A scrape that does not overlap the load window samples an idle
+      server and produces flat series
+- [ ] Issue one request by hand and read the response body. `--max-model-len`, model name and
+      endpoint path are the three things that silently reject an entire run
 
 ## Recording provenance
 

@@ -51,8 +51,10 @@ The value used is recorded in the provenance block of every result.
 | Victim degradation caused by queueing, not eviction | Report runtime queue-depth series alongside; the aggressor rate is deliberately low relative to victim rate so that queue pressure is not the dominant term |
 | Degradation is an artefact of client-side connection limits | `max_connections` set well above offered concurrency; client-side arrival timestamps recorded so client queueing is visible |
 | Chosen runtime happens to lack instrumentation others have | H2 must be re-run on a second runtime before the result can be stated generally. A single-runtime result is a result about that runtime |
-| Prompt content affects results | Filler text is deterministic and seeded; identical across runs |
+| Prompt content affects results | Filler text is deterministic and seeded with `crc32`, which is stable across processes; identical across runs |
 | Cherry-picked intensity | Sweep the aggressor rate and report the full curve, not the point that shows the largest effect |
+| Aggressor requests rejected rather than served | Prompt length is sized against the runtime's `--max-model-len` before the run; `src/workload.py` records the HTTP status of every request and warns when an entire workload was rejected. A rejected aggressor applies no pressure while the run still completes and the metrics still look clean |
+| Metrics sampled outside the load window | Collection runs concurrently with the workload; `src/collect.py` warns when every captured series was constant, which is what an idle-window scrape produces |
 
 ## What a negative result would look like
 

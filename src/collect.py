@@ -107,19 +107,38 @@ def normalize_request_id(spans: list[dict], extra_keys: tuple[str, ...] = ()) ->
 
 # ----------------------------------------------------------------- metrics
 
-def scrape(url: str, duration_s: float, interval_s: float = 2.0) -> dict:
-    """Poll a Prometheus endpoint and keep the series whose names look relevant."""
+def scrape(url: str, duration_s: float, interval_s: float = 0.25) -> dict:
+    """Poll a Prometheus endpoint and keep the series whose names look relevant.
+
+    Timestamps are `time.monotonic()`, the same clock `src/workload.py` records request
+    arrivals against, so the two streams can be joined (see `src/align.py`). A single wall
+    -clock anchor is recorded alongside for human reading; nothing joins on it.
+
+    The default interval is sub-second because the quantity being observed is not slow.
+    Under a constrained cache, KV occupancy oscillates as blocks are reclaimed and
+    reallocated, and preemption counters advance in bursts. A multi-second interval aliases
+    that into a flat line, which reads exactly like a system with nothing to report.
+
+    Scheduling slip is recorded rather than absorbed. A sampler that quietly falls behind
+    produces a plausible-looking series with the interesting moments missing from it.
+    """
     series: dict[str, list[tuple[float, float]]] = {}
+    anchor = {"t_mono": time.monotonic(), "t_wall": time.time()}
+    slips: list[dict] = []
+    n_samples = n_errors = 0
+
     t_end = time.monotonic() + duration_s
+    next_due = time.monotonic()
     while time.monotonic() < t_end:
-        t = time.time()
+        t = time.monotonic()
         try:
             with urllib.request.urlopen(url, timeout=5) as r:
                 body = r.read().decode("utf-8", "ignore")
+            n_samples += 1
         except Exception as exc:                      # noqa: BLE001
+            n_errors += 1
             print(f"  scrape failed: {exc}")
-            time.sleep(interval_s)
-            continue
+            body = ""
         for line in body.splitlines():
             if line.startswith("#") or " " not in line:
                 continue
@@ -131,16 +150,49 @@ def scrape(url: str, duration_s: float, interval_s: float = 2.0) -> dict:
                 series.setdefault(name, []).append((t, float(val)))
             except ValueError:
                 pass
-        time.sleep(interval_s)
 
-    return {
+        next_due += interval_s
+        delay = next_due - time.monotonic()
+        if delay < 0:
+            slips.append({"t_mono": time.monotonic(), "slip_s": round(-delay, 4)})
+            next_due = time.monotonic()
+        else:
+            time.sleep(delay)
+
+    out = {
         "endpoint": url,
+        "clock_anchor": anchor,
+        "interval_s": interval_s,
+        "samples": n_samples,
+        "scrape_errors": n_errors,
+        "sampler_slips": slips,
         "series": series,
         # The finding for H3: is there any key on these series that identifies an
         # individual request? Prometheus series are aggregates; if a runtime did expose a
         # per-request label it would show up as a label on a pressure series.
         "per_request_join_key": _find_join_key(series),
     }
+    _warn_if_static(out)
+    return out
+
+
+def _warn_if_static(m: dict) -> None:
+    """Flag the case where every series held one value for the whole window.
+
+    That is what a scrape started after the workload has finished looks like, and it is
+    indistinguishable from a real result unless someone checks. The check is cheap and the
+    alternative is a run that has to be repeated.
+    """
+    series = m.get("series", {})
+    if not series or m.get("samples", 0) < 3:
+        print("  WARNING: fewer than 3 usable samples. Nothing here can be joined to a request.")
+        return
+    moving = [n for n, pts in series.items() if len({round(v, 6) for _, v in pts}) > 1]
+    if not moving:
+        print("  WARNING: every scraped series was constant for the entire window.")
+        print("  If the workload was running during this scrape, the runtime reported no")
+        print("  change under load. If it was not, the scrape sampled an idle server and")
+        print("  the run must be repeated with collect started BEFORE workload.")
 
 
 def _find_join_key(series: dict) -> str | None:
@@ -261,14 +313,38 @@ def write_mock(out: Path) -> None:
 
     (out / "requests.json").write_text(json.dumps(
         {"scenario": {"mock": True}, "t_run_start_epoch": time.time(),
-         "t_run_end_epoch": time.time() + 60, "records": records}, indent=2))
+         "t_run_end_epoch": time.time() + 60,
+         "clock_anchor": {"t0_mono": time.monotonic(), "t0_wall": time.time()},
+         "records": records}, indent=2))
     (out / "spans.json").write_text(json.dumps(spans, indent=2))
+    # Synthetic metric samples on the same monotonic axis as the synthetic requests above,
+    # so that src.align has something to join in the self-test. Values move over the window;
+    # a constant series would trip the static-series warning and mask a real one later.
+    t_mono0 = time.monotonic()
+    n_pts = 60
+    mock_series: dict[str, list] = {
+        "runtime:num_preemptions_total": [],
+        "runtime:kv_cache_usage_perc": [],
+        "runtime:num_requests_waiting": [],
+    }
+    for k in range(n_pts):
+        tm = t_mono0 + k * 0.5
+        frac = k / max(1, n_pts - 1)
+        mock_series["runtime:num_preemptions_total"].append(
+            [tm, round(41.0 * frac, 1) if contention else 0.0])
+        mock_series["runtime:kv_cache_usage_perc"].append(
+            [tm, round(0.55 + 0.39 * frac, 3) if contention else round(0.19 + 0.04 * frac, 3)])
+        mock_series["runtime:num_requests_waiting"].append(
+            [tm, float(int(12 * frac)) if contention else 0.0])
+
     (out / "metrics.json").write_text(json.dumps({
         "endpoint": "mock",
-        "series": {
-            'runtime:num_preemptions_total': [[time.time(), 41.0 if contention else 0.0]],
-            'runtime:gpu_cache_usage_perc': [[time.time(), 0.94 if contention else 0.21]],
-            'runtime:num_requests_waiting': [[time.time(), 6.0 if contention else 0.0]]},
+        "clock_anchor": {"t_mono": t_mono0, "t_wall": time.time()},
+        "interval_s": 0.5,
+        "samples": n_pts,
+        "scrape_errors": 0,
+        "sampler_slips": [],
+        "series": mock_series,
         # The point of H3: aggregates with no request identity on them.
         "per_request_join_key": None}, indent=2))
     # Inherits provenance="reconstructed", so the self-test cannot report a positive H4.
@@ -286,6 +362,8 @@ def main() -> None:
     ap.add_argument("--request-id-key", default="", help="extra attribute holding the request id")
     ap.add_argument("--metrics-url", help="runtime Prometheus endpoint")
     ap.add_argument("--scrape-seconds", type=float, default=0.0)
+    ap.add_argument("--scrape-interval", type=float, default=0.25,
+                    help="seconds between metric samples; sub-second by design, see scrape()")
     ap.add_argument("--residency-from", help="residency records from a patched runtime")
     ap.add_argument("--reconstruct", action="store_true",
                     help="approximate the contention graph from client timings (not evidence for H4)")
@@ -309,9 +387,10 @@ def main() -> None:
             print("  Find the runtime's own request-id attribute and pass --request-id-key.")
 
     if args.metrics_url and args.scrape_seconds > 0:
-        m = scrape(args.metrics_url, args.scrape_seconds)
+        m = scrape(args.metrics_url, args.scrape_seconds, args.scrape_interval)
         (out / "metrics.json").write_text(json.dumps(m, indent=2))
-        print(f"metrics: {len(m['series'])} series; "
+        print(f"metrics: {len(m['series'])} series from {m['samples']} samples; "
+              f"{len(m['sampler_slips'])} sampler slips; "
               f"per-request join key: {m['per_request_join_key'] or '(none)'}")
 
     g = None

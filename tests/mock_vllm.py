@@ -93,9 +93,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if self.path != "/v1/completions":
+        if self.path not in ("/v1/completions", "/v1/chat/completions"):
             self.send_error(404)
             return
+        chat = self.path.endswith("/chat/completions")
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length)
         try:
@@ -105,7 +106,19 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         n_tokens = min(int(req.get("max_tokens", 16)), CFG.max_tokens_cap)
-        prompt_len = len(req.get("prompt", "")) // 4
+        if chat:
+            text = " ".join(m.get("content", "") for m in req.get("messages", []))
+        else:
+            text = req.get("prompt", "")
+        prompt_len = len(text) // 4
+
+        # Reject prompts that would not fit the simulated context window, the way a real
+        # runtime does. The scenarios have to be sized against this, and a self-test that
+        # accepted anything would not catch an oversized prompt before GPU time was spent.
+        if prompt_len > CFG.max_model_len:
+            self.send_error(400, f"prompt is too long: {prompt_len} tokens > "
+                                 f"max_model_len {CFG.max_model_len}")
+            return
 
         bump("waiting", 1)
         acquired = SLOTS.acquire(timeout=CFG.admission_timeout)
@@ -127,10 +140,17 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             for i in range(n_tokens):
                 time.sleep(CFG.token_ms / 1000.0)
-                chunk = {
-                    "id": "cmpl-mock", "object": "text_completion",
-                    "choices": [{"index": 0, "text": f" t{i}", "finish_reason": None}],
-                }
+                if chat:
+                    chunk = {
+                        "id": "chatcmpl-mock", "object": "chat.completion.chunk",
+                        "choices": [{"index": 0, "delta": {"content": f" t{i}"},
+                                     "finish_reason": None}],
+                    }
+                else:
+                    chunk = {
+                        "id": "cmpl-mock", "object": "text_completion",
+                        "choices": [{"index": 0, "text": f" t{i}", "finish_reason": None}],
+                    }
                 self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
                 self.wfile.flush()
             usage = {
@@ -162,6 +182,8 @@ def main() -> int:
     p.add_argument("--token-ms", type=float, default=4.0)
     p.add_argument("--max-tokens-cap", type=int, default=64)
     p.add_argument("--admission-timeout", type=float, default=120.0)
+    p.add_argument("--max-model-len", type=int, default=8192,
+                   help="reject prompts longer than this, as a real runtime would")
     p.add_argument("--model", default="mock/model")
     CFG = p.parse_args()
     MODEL = CFG.model

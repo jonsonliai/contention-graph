@@ -1,17 +1,33 @@
-model: Qwen/Qwen2.5-7B-Instruct
+model: Qwen/Qwen2.5-7B-Instruct         # override with INFERENCE_MODEL
 endpoint: http://localhost:8000/v1/chat/completions
 timeout_s: 300
 max_connections: 128
+
+# Prompt sizing must be checked against the runtime's --max-model-len before the run.
+#
+# The filler is random lowercase strings, which are not in any tokeniser's vocabulary and
+# therefore split into several sub-word tokens each. Empirically the ratio is roughly one
+# token per 2.5-3 characters, so a word of average length 6 plus a space costs about 3
+# tokens: prompt_words * 3 is a serviceable upper estimate.
+#
+# An aggressor prompt that exceeds max_model_len is rejected with HTTP 400. The workload
+# records the rejection, but the run still completes and produces a clean-looking result in
+# which no pressure was ever applied. src/workload.py now prints the status distribution and
+# warns when an entire workload failed, because that outcome is otherwise indistinguishable
+# from a runtime that handled the load comfortably.
+#
+#   prompt_words: 1500  ->  ~4500 tokens, fits an 8192 context with room for the output
+#   prompt_words: 6000  ->  ~18000 tokens, rejected on any 8192-token context
 workloads:
   victim:
     count: 200
     rate_per_s: 4
-    prompt_words: 60
+    prompt_words: 60            # ~180 tokens
     max_tokens: 64
     start_delay_s: 15           # let the aggressor establish cache occupancy first
   aggressor:
     count: 24
     rate_per_s: 0.8
-    prompt_words: 6000          # long context: many KV blocks, held for a long time
-    max_tokens: 1024
+    prompt_words: 1500          # long context: many KV blocks, held for a long time
+    max_tokens: 1024            # 4500 + 1024 = ~5500 tokens per aggressor request
     start_delay_s: 0

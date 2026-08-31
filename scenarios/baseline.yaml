@@ -1,14 +1,17 @@
-model: Qwen/Qwen2.5-7B-Instruct          # an open-weight model that fits the available GPU
+model: Qwen/Qwen2.5-7B-Instruct          # override with INFERENCE_MODEL
 endpoint: http://localhost:8000/v1/chat/completions
 timeout_s: 300
 max_connections: 128
+
+# The victim workload must be identical to the one in contention.yaml, including
+# start_delay_s: the comparison is only valid if the two runs differ in exactly one respect.
 workloads:
   victim:
     count: 200
     rate_per_s: 4
     prompt_words: 60
     max_tokens: 64
-    start_delay_s: 0
+    start_delay_s: 15
   aggressor:
     count: 0                    # baseline: victim alone
     rate_per_s: 0

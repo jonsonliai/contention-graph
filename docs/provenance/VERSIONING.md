@@ -19,6 +19,12 @@ Versions communicate **evidentiary state**, not API compatibility.
 | `v0.3-…`, `v0.4-…` | Further hypotheses evaluated, or results extended to a second runtime |
 | `v1.0-filed` | **The state cited externally.** Frozen. Later work continues on higher versions and does not alter this one |
 
+A third component may be added — `v0.1.1`, `v0.2.3` — for changes that correct the harness or
+the documentation **without producing or altering a result**. Such a release claims nothing;
+its changelog entry says so explicitly. The distinction matters because the ordering argument
+above depends on result-bearing versions being identifiable as such: a reader must be able to
+see that no result was claimed between the pre-registration and the first experiment.
+
 **The ordering carries the argument.** `v0.1-preregistration` exists to demonstrate that the
 hypotheses and the conditions under which they would be falsified were fixed and published
 before any result was obtained. If that release did not precede the result releases in time,
