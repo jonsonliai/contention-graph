@@ -9,3 +9,11 @@ __pycache__/
 .DS_Store
 .env
 *.local
+
+# Published run data is committed; self-test output is not.
+!runs/baseline_*/
+!runs/contention_*/
+!runs/*.md
+!runs/*.txt
+!runs/*.gz
+runs/_selftest*

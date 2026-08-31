@@ -5,6 +5,82 @@ See `VERSIONING.md` for what the version numbers mean.
 
 <!-- Add new entries directly below this line. -->
 
+## v0.2-first-result — 2026-08-31
+
+**DOI:** [pending Zenodo archive]
+**Retrieve with:** `git checkout v0.2-first-result`
+
+First experimental result. Five runs against a live runtime.
+
+**Claimed:** that on vLLM 0.28.0, under co-resident cache pressure from long-context
+requests, a victim request's own span records the elevated latency and records nothing that
+identifies the cause; and that the runtime's own cache-occupancy and preemption series carry
+no key by which they could be joined to the request that suffered. H1 is not falsified and
+establishes that there is something to attribute. H4 is NOT RUN and no claim is made about it.
+
+**Not claimed:** anything about how often this occurs in production, about multi-node
+topologies, about real traffic mixes, or about runtimes other than the one tested. A single
+runtime result is a result about that runtime.
+
+### Provenance
+
+| | |
+|---|---|
+| Runtime | vLLM 0.28.0 |
+| Model | Qwen/Qwen2.5-1.5B-Instruct |
+| Torch | 2.13.0+cu130 |
+| GPU | NVIDIA RTX PRO 6000 Blackwell Server Edition, **MIG slice GI 3** (46 SM, 24192 MiB), sm_120 |
+| Driver / nvcc | 580.126.16 / 12.8.93 |
+| Provider | RunPod, pod kvb4pkbaqm5nxy |
+| Attention backend | FLASH_ATTN — FlashInfer is unusable on sm_120 under nvcc 12.8 |
+| Engine | 512 KV blocks (8,192 tokens), prefix caching off, `--max-model-len 8192` |
+| Date | 2026-08-31 |
+| Commit | recorded in `runs/provenance.txt` |
+
+The cache constraint is deliberate and its cost is stated in `docs/METHOD.md`: it establishes
+that the attribution gap exists when eviction occurs, and says nothing about how often
+eviction occurs. The MIG slice is recorded because the phenomenon's onset depends on pool
+size and a reader who assumed a full card would size their reproduction wrongly.
+
+### Results
+
+Two consecutive baselines, p95 spread 1.03x against a 1.25x threshold. Three aggressor
+intensities, every aggressor request served at every point.
+
+| intensity | aggressors | victim p95 | ratio | KV peak |
+|---|---|---|---|---|
+| low | 6 @ 0.25/s | 39.7 ms | 1.17x | 0.716 |
+| mid | 12 @ 0.5/s | 104.2 ms | 3.06x | 0.718 |
+| high | 24 @ 1.0/s | 352.2 ms | 10.34x | 0.761 |
+
+Baseline p95 34.0 ms, n=400 at every point.
+
+**H2** — 2,965 victim spans. Attributes present: `gen_ai.latency.e2e`,
+`gen_ai.latency.time_in_model_decode`, `gen_ai.latency.time_in_model_inference`,
+`gen_ai.latency.time_in_model_prefill`, `gen_ai.latency.time_in_queue`,
+`gen_ai.latency.time_to_first_token`, `gen_ai.request.id`, `gen_ai.request.max_tokens`,
+`gen_ai.request.n`, `gen_ai.request.top_p`, `gen_ai.usage.completion_tokens`,
+`gen_ai.usage.prompt_tokens`, `request.id`, `request.id.server`. Attributes referencing a
+co-resident request, an eviction, or cache pressure: none.
+
+**H3** — pressure series present (`vllm:kv_cache_usage_perc`, `vllm:num_preemptions_total`);
+per-request join key: none.
+
+### Two things learned by running it
+
+**The runtime does not propagate the client's request id onto its spans.** All 3,013 joined
+spans matched through the response id recorded by `src/workload.py`; none matched the client's
+`X-Request-Id` directly. Without that mapping H2 would have reported INCONCLUSIVE, which
+reads like a limitation of the experiment rather than a join nobody performed.
+
+**Queue depth explains the degradation at low intensity and stops explaining it at high
+intensity.** At the highest point, 389 of 400 requests fall into one queue-depth bin spanning
+p50 27 ms to p95 348 ms: a request admitted against a full pool but before a queue has formed
+has queue depth zero. Cache occupancy separates the same requests cleanly at every intensity.
+A request-path signal proxies for the off-path cause under light load and fails under the load
+where attribution is wanted. This was not anticipated in the pre-registered design; it is
+reported because it bears directly on the premise rather than despite doing so.
+
 ## v0.1.4-residual — 2026-08-31
 
 **Retrieve with:** `git checkout v0.1.4-residual`

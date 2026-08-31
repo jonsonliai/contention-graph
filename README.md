@@ -9,6 +9,8 @@ and a minimal instrumentation that closes the gap.
 Runs on a single GPU against an open-source serving runtime and an open-weight model.
 No proprietary data, no vendor telemetry, no client environment.
 
+**Result:** H2 and H3 not falsified against vLLM 0.28.0. See [Status](#status).
+
 ---
 
 ![](docs/figures/fig2_timeline.png)
@@ -168,10 +170,41 @@ docs/RUNTIME_SETUP.md     runtime flags, metric names, version notes
 
 ## Status
 
-**Scaffold.** The design and the harness are complete; results are not yet published here.
-Results will be added with the runtime version, model, hardware, and commit hash under which
-they were produced. Until then this repository states a method and a set of hypotheses, not a
-finding.
+**First result, 2026-08-31.** Five runs against vLLM 0.28.0 on a single GPU. Verdicts are in
+[`runs/report.md`](runs/report.md), the intensity sweep in [`runs/sweep.md`](runs/sweep.md),
+and the environment in [`runs/provenance.txt`](runs/provenance.txt).
+
+| | Verdict | |
+|---|---|---|
+| **H1** | NOT FALSIFIED | victim p95 TTFT rises 1.17x, 3.06x, 10.34x across three aggressor intensities |
+| **H2** | NOT FALSIFIED | 2,965 victim spans carry 14 attributes; none names a co-resident request, an eviction, or cache pressure |
+| **H3** | NOT FALSIFIED | the runtime exposes cache-occupancy and preemption series with no per-request label |
+| **H4** | NOT RUN | requires residency records from an instrumented runtime; the reconstructed graph cannot test it |
+
+Two consecutive baselines agreed to within 1.03x, so the environment held still across the
+comparison. Every aggressor request was served at every intensity, so no point applied less
+pressure than its label claims.
+
+**What H2 rests on.** The victim spans carry `gen_ai.latency.time_in_queue`,
+`gen_ai.latency.time_in_model_prefill`, `gen_ai.latency.time_in_model_decode` and nine other
+attributes. This is not a runtime that instruments sparsely. It records that a request
+waited and for how long; it does not record what it waited behind. The absence is specific,
+not a gap someone forgot to fill.
+
+**One observation not anticipated in the design.** At low aggressor intensity, queue depth at
+admission separates fast victim requests from slow ones. At high intensity it stops doing so:
+389 of 400 requests fall in one bin spanning p50 27ms to p95 348ms, because a request
+admitted against a full pool but before a queue has formed has queue depth zero. Cache
+occupancy separates the same requests cleanly at both intensities. A signal on the request
+path proxies for the off-path cause under light load and fails under heavy load — which is
+when attribution is wanted. `src/align.py` reports this rather than presenting the
+queue-depth gradient as a finding.
+
+**What is not established.** H1's ratios are population-level. Most victim requests were
+admitted against a nearly empty pool even at the highest intensity, so the p95 rise is
+carried by a minority; the alignment tables show which. Single GPU, single node, one runtime,
+one model, synthetic load. Nothing here establishes how often eviction occurs in production,
+or that the gap persists across multi-node topologies or real traffic mixes.
 
 ## Licence
 

@@ -1,0 +1,8 @@
+{
+  "spans": 3055,
+  "with_id": 3038,
+  "mapped_via_response_id": 2995,
+  "direct_client_id": 0,
+  "unmatched": 17,
+  "attribute_used": "gen_ai.request.id"
+}

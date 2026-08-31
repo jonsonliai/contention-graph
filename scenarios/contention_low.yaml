@@ -1,4 +1,9 @@
-model: Qwen/Qwen2.5-7B-Instruct         # override with INFERENCE_MODEL
+model: Qwen/Qwen2.5-1.5B-Instruct        # the model the published result was produced with
+# The published runs used this model on a 24 GiB MIG slice. INFERENCE_MODEL overrides it;
+# whatever is in effect is recorded in requests.json, so a run is self-documenting. The
+# default is the one that reproduces the result rather than the largest model that would
+# fit somewhere, because a reader who clones this and runs it should get the published
+# numbers and not a different experiment.
 endpoint: http://localhost:8000/v1/chat/completions
 timeout_s: 600
 max_connections: 128
