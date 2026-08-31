@@ -59,14 +59,64 @@ def dirty():
     return bool(git("status", "--porcelain", check=False))
 
 
+def tag_exists(tag):
+    return bool(git("tag", "-l", tag, check=False))
+
+
+def doi_from_changelog(tag):
+    """Read the DOI already recorded for `tag` in CHANGELOG.md.
+
+    The DOI is assigned by Zenodo *after* the tag is cut, so it is not in the tagged commit
+    and cannot be. It is added by a later commit and read from the working tree here.
+
+    Reading it rather than asking for it again is the point of this script: the four values
+    exist in one place and the places that cite them copy from that place. A --show that
+    demanded the DOI on the command line would reintroduce the hand-typing it exists to
+    prevent, and the two would disagree the first time someone mistyped a digit.
+    """
+    p = "CHANGELOG.md"
+    if not os.path.exists(p):
+        return ""
+    s = io.open(p, encoding="utf-8").read()
+    m = re.search(r"^##\s+" + re.escape(tag) + r"\b.*?$", s, re.M)
+    if not m:
+        return ""
+    rest = s[m.end():]
+    nxt = re.search(r"^##\s", rest, re.M)
+    section = rest[: nxt.start()] if nxt else rest
+    d = re.search(r"\*\*DOI:\*\*\s*(.+)$", section, re.M)
+    if not d:
+        return ""
+    val = d.group(1).strip()
+    if val.startswith("["):
+        return ""
+    # The line records both the version DOI and the concept DOI. A citation names the
+    # version: the concept DOI resolves to whatever is newest, so a petition citing it would
+    # point at a state written after the petition was filed. The first token on the line is
+    # the version DOI by the convention this changelog follows. It also keeps the middle dot
+    # out of the identifier, which the Appendix A row uses as its own separator.
+    m = re.search(r"10\.\d{4,}/\S+", val)
+    return m.group(0).rstrip(".,;") if m else val
+
+
 def identifiers(tag, doi):
+    """Resolve the four values a citation needs, from the tag rather than from HEAD.
+
+    `HEAD` is wrong once anything has been committed after the tag, which is the normal
+    case: the DOI is recorded in a commit that necessarily comes after the release it
+    describes. Taking the hash from HEAD would emit identifiers naming a commit the citation
+    does not point at, and a reader who checked out that hash would find a repository whose
+    changelog still says the DOI is pending. The tag is the thing being cited, so the tag is
+    what is resolved.
+    """
+    ref = tag + "^{commit}" if tag_exists(tag) else "HEAD"
     return {
         "url": repo_url(),
         "tag": tag,
-        "commit": git("rev-parse", "HEAD"),
-        "short": git("rev-parse", "--short=12", "HEAD"),
+        "commit": git("rev-parse", ref),
+        "short": git("rev-parse", "--short=12", ref),
         "date": dt.date.today().isoformat(),
-        "doi": doi or "[DOI pending Zenodo archive]",
+        "doi": doi or doi_from_changelog(tag) or "[DOI pending Zenodo archive]",
     }
 
 
@@ -179,12 +229,17 @@ def main():
     ap.add_argument("--doi", default="", help="Zenodo DOI, once assigned")
     ap.add_argument("--filed", action="store_true",
                     help="mark this as the version cited in the petition")
-    ap.add_argument("--show", action="store_true", help="print identifiers for HEAD, change nothing")
+    ap.add_argument("--show", nargs="?", const="", metavar="TAG",
+                    help="print the identifiers for TAG (default: the most recent tag) "
+                         "and change nothing")
     a = ap.parse_args()
 
-    if a.show:
-        emit(identifiers(git("describe", "--tags", "--abbrev=0", check=False) or "[untagged]",
-                         a.doi), False)
+    if a.show is not None:
+        tag = a.show or git("describe", "--tags", "--abbrev=0", check=False) or "[untagged]"
+        if a.show and not tag_exists(tag):
+            sys.exit("No such tag: %s\nTags: %s"
+                     % (tag, ", ".join(git("tag", check=False).split()) or "(none)"))
+        emit(identifiers(tag, a.doi), False)
         return
 
     if not a.tag or not a.message:
@@ -209,12 +264,12 @@ def main():
     ident["commit"] = git("rev-parse", "HEAD")
     ident["short"] = git("rev-parse", "--short=12", "HEAD")
     if a.filed:
+        # The block names the tag and the DOI, not the commit hash, and that is deliberate:
+        # a block that named the hash of the commit containing it could never be written,
+        # because writing it changes the hash. The tag resolves to the hash through git, the
+        # GitHub Release and the Zenodo metadata, which the block says. One write, no amend
+        # chase.
         set_filed_block(ident)
-        git("add", "README.md")
-        git("commit", "--amend", "--no-edit")
-        ident["commit"] = git("rev-parse", "HEAD")
-        ident["short"] = git("rev-parse", "--short=12", "HEAD")
-        set_filed_block(ident)                      # rewrite with the final hash
         git("add", "README.md")
         git("commit", "--amend", "--no-edit")
         ident["commit"] = git("rev-parse", "HEAD")

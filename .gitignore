@@ -17,3 +17,6 @@ __pycache__/
 !runs/*.txt
 !runs/*.gz
 runs/_selftest*
+
+# Generated exhibit snapshots; regenerate with docs/provenance/exhibit5.py
+exhibit5-*.html

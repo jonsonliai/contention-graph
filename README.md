@@ -10,6 +10,8 @@ Runs on a single GPU against an open-source serving runtime and an open-weight m
 No proprietary data, no vendor telemetry, no client environment.
 
 **Result:** H2 and H3 not falsified against vLLM 0.28.0. See [Status](#status).
+The citable state is `v0.2.1-citable`; `v0.2-first-result` carries the same data and
+the same verdicts, but its reproduction instructions do not run.
 
 ---
 
@@ -89,32 +91,48 @@ pip install -r requirements.txt
 #    produces a span, because H2 cannot be evaluated without one.
 python3 tools/otlp_file_sink.py --out runs/otel-spans.jsonl --port 4318 &
 
-# 2. Baseline: victim workload alone. Metrics are scraped DURING the run, not after.
-python -m src.collect --out runs/baseline \
-    --metrics-url http://localhost:8000/metrics --scrape-seconds 120 &
-python -m src.workload --scenario scenarios/baseline.yaml --out runs/baseline
-wait
+export INFERENCE_MODEL=Qwen/Qwen2.5-1.5B-Instruct     # or whatever you are serving
 
-# 3. Contention: victim plus aggressor. Same structure.
-python -m src.collect --out runs/contention \
-    --metrics-url http://localhost:8000/metrics --scrape-seconds 180 &
-python -m src.workload --scenario scenarios/contention.yaml --out runs/contention
-wait
+# 2. Two baselines and three intensities. Two baselines because a contention result
+#    measured against a machine that was not measured twice cannot be distinguished from
+#    one measured against a machine that drifted; three intensities because a single point
+#    cannot separate "pressure causes this" from "this point produces a number worth
+#    reporting". Both are required by docs/provenance/PUBLICATION_CHECKLIST.md.
+#
+#    Metrics are scraped DURING each run, never after. wait on the collector's own PID:
+#    a bare `wait` also waits for the sink and the runtime, which never exit.
+run_one () {
+  python -m src.collect --out "runs/$1" \
+      --metrics-url http://localhost:8000/metrics \
+      --scrape-seconds "$3" --scrape-interval 0.1 &
+  local collector=$!
+  python -m src.workload --scenario "scenarios/$2" --out "runs/$1"
+  wait $collector
+  sleep 20                                            # let the engine drain
+}
 
-# 3b. Spans and the contention graph, once the run is over. Span ids are joined to client
-#     ids using the response ids recorded in requests.json, so this step must come after
-#     the workload has written that file.
-python -m src.collect --out runs/contention \
-    --spans-from runs/otel-spans.jsonl \
-    --reconstruct          # or --residency-from, if the runtime has been patched
+run_one baseline_a       baseline.yaml         150
+run_one baseline_b       baseline.yaml         150
+run_one contention_low   contention_low.yaml   320
+run_one contention_mid   contention_mid.yaml   320
+run_one contention_high  contention_high.yaml  320
 
-# 4. Analysis: does the victim degrade, and is the cause in the victim's trace?
-python -m src.analyze runs/baseline_a runs/contention_mid
+# 3. Spans and the contention graph, once the runs are over. Span ids are joined to client
+#    ids through the response ids recorded in requests.json, so this must come after the
+#    workload has written that file.
+for lvl in low mid high; do
+  python -m src.collect --out "runs/contention_$lvl" \
+      --spans-from runs/otel-spans.jsonl \
+      --reconstruct        # or --residency-from, if the runtime has been patched
+done
 
-# 5. The sweep. Two baselines and more than one aggressor intensity are required before
-#    a result is published; see docs/provenance/PUBLICATION_CHECKLIST.md.
+# 4. The sweep first: if the two baselines disagree, nothing below it means anything and
+#    the correct action is to stop, not to keep the quieter baseline.
 python -m src.sweep --baselines runs/baseline_a runs/baseline_b \
                     --points runs/contention_low runs/contention_mid runs/contention_high
+
+# 5. Verdicts. The mid point is reported; the sweep is what shows it was not chosen.
+python -m src.analyze runs/baseline_a runs/contention_mid
 ```
 
 **The metrics scrape has to overlap the workload.** It polls a live endpoint, so a scrape
@@ -131,19 +149,51 @@ failure in a smaller form.
 
 ## What a result looks like
 
-The output that matters is not the latency numbers. It is the attribute inventory:
+The output that matters is not the latency numbers. It is the attribute inventory. This is
+`runs/report.md` from the published run, not an illustration:
 
 ```
-H2  victim span attributes present under contention:
-      gen_ai.request.model, gen_ai.usage.input_tokens, gen_ai.usage.output_tokens,
-      gen_ai.response.finish_reasons, ... , duration_ms
-    attributes referencing a co-resident request, an eviction, or cache pressure:
-      (none)
-    -> H2 NOT FALSIFIED
+H2  the victim's span does not name the cause
+    -> NOT FALSIFIED
+    victim spans captured: 2965
+    attributes present: gen_ai.latency.e2e, gen_ai.latency.time_in_model_decode,
+      gen_ai.latency.time_in_model_inference, gen_ai.latency.time_in_model_prefill,
+      gen_ai.latency.time_in_queue, gen_ai.latency.time_to_first_token,
+      gen_ai.request.id, gen_ai.request.max_tokens, gen_ai.request.n,
+      gen_ai.request.top_p, gen_ai.usage.completion_tokens,
+      gen_ai.usage.prompt_tokens, request.id, request.id.server
+    attributes referencing a co-resident request, an eviction, or cache pressure: (none)
 ```
 
-That absence is the finding. Everything else in the repository exists to make the absence
-demonstrable rather than asserted.
+Fourteen attributes. The runtime splits latency into queue, prefill and decode; it records
+that a request waited and for how long. It does not record what it waited behind. The absence
+is specific, not a gap someone forgot to fill — and it is the finding. Everything else in the
+repository exists to make that absence demonstrable rather than asserted.
+
+### Checking the published data
+
+Every artefact carries a SHA-256 in [`runs/CHECKSUMS.txt`](runs/CHECKSUMS.txt), including the
+series files stored gzipped:
+
+```bash
+# Paths in CHECKSUMS.txt are relative to the repository root; run it from there.
+gunzip -k runs/*/metrics.json.gz runs/*/spans.json.gz runs/*.jsonl.gz
+shasum -a 256 -c runs/CHECKSUMS.txt        # 23 files, expect no FAILED
+```
+
+The verdicts can be recomputed from the committed data, without a GPU and without the
+runtime. This is the check that matters: it is the difference between a repository that
+reports a result and one from which the result follows.
+
+```bash
+python -m src.sweep --baselines runs/baseline_a runs/baseline_b \
+                    --points runs/contention_low runs/contention_mid runs/contention_high
+python -m src.analyze runs/baseline_a runs/contention_mid --report /tmp/recomputed.md
+diff runs/report.md /tmp/recomputed.md      # expect no output
+```
+
+`report.md` regenerates byte-for-byte and the sweep returns the same 1.17x, 3.06x and 10.34x.
+Nothing in the published verdicts depends on anything not in this repository.
 
 ---
 
@@ -164,6 +214,9 @@ docs/WHITEPAPER.md        the argument, the definition, the proposed conventions
 docs/figures/             figures, as PNG and vector PDF
 docs/METHOD.md            experiment design, threats to validity
 docs/RUNTIME_SETUP.md     runtime flags, metric names, version notes
+docs/provenance/          versioning policy, publication checklist, and the two scripts
+                          that emit citation identifiers and assemble the exhibit
+runs/                     the published run data, verdicts, sweep, provenance, checksums
 ```
 
 ---

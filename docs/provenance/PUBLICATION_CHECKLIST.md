@@ -84,6 +84,13 @@ And submit as the exhibit itself: a PDF snapshot of the README and `runs/report.
 cited commit. **A link alone is not an exhibit** — links rot, and the adjudicator may be
 reading offline.
 
+`docs/provenance/exhibit5.py <tag>` assembles it. It reads the documents out of the tagged
+commit with `git show` rather than from the working tree, because the working tree contains
+later commits — the DOI is recorded in one — and a snapshot taken from it would show a state
+the citation does not name. Where the runs were produced under an earlier commit than the
+release, it computes what changed between the two and says so: an exhibit carrying two hashes
+without explaining their relation reads as though one of them is a mistake.
+
 ---
 
 ## If the gates are not cleared by the date a citation is needed

@@ -5,6 +5,52 @@ See `VERSIONING.md` for what the version numbers mean.
 
 <!-- Add new entries directly below this line. -->
 
+## v0.2.1-citable — 2026-08-31
+
+**DOI:** [pending Zenodo archive]
+**Retrieve with:** `git checkout v0.2.1-citable`
+
+Corrections to documentation and to the citation tooling. **This is the version to cite.**
+
+**Claimed:** exactly what `v0.2-first-result` claimed, unchanged. The run data in `runs/` is
+byte-identical to that release and the verdicts recompute from it identically. Nothing here
+alters a result; `VERSIONING.md` provides for a third component precisely for this.
+
+**Why cite this instead of v0.2.** The README at `v0.2-first-result` gave a command sequence
+that does not run: steps 2 and 3 wrote `runs/baseline` and `runs/contention` while steps 4
+and 5 read `runs/baseline_a` and `runs/contention_mid`, so a reader following it hits an
+error partway through. The checklist's standard is that a result which cannot be reproduced
+from what is in the repository is worse than no result, and an exhibit whose reproduction
+instructions fail is the case that standard is about. The v0.2 release is not withdrawn — it
+remains the first result and its data is unchanged — but the citable state is this one.
+
+- The command sequence is now the one that produced the published runs: two baselines, three
+  intensities, sweep before verdicts, and a collector PID to `wait` on. A bare `wait` also
+  waits for the OTLP sink and the runtime, neither of which exits.
+- "What a result looks like" showed an invented attribute inventory. It is now the actual
+  output: fourteen attributes, latency split into queue, prefill and decode, and nothing
+  naming what the request waited behind.
+- Added the check that matters more than the numbers: the verdicts recompute from the
+  committed data with no GPU and no runtime, and `runs/report.md` regenerates byte-for-byte.
+  The checksum command was also wrong — paths in `CHECKSUMS.txt` are relative to the
+  repository root and the README said to `cd runs` first, which fails on all 23 files.
+
+**Citation tooling.** `docs/provenance/release.py --show` emitted the hash of `HEAD`. Once
+anything is committed after a tag that is the wrong commit, and something always is: the DOI
+is recorded in a commit that necessarily follows the release it describes. It was reporting
+a hash whose checkout shows a changelog still saying the DOI is pending. It now resolves the
+tag, and reads the version DOI from `CHANGELOG.md` rather than asking for it again — the
+script exists to stop the same four values being typed in several places and disagreeing.
+
+**`docs/provenance/exhibit5.py`** is new. The checklist requires the exhibit to be a snapshot
+of the README and the result report as at the cited commit; nothing assembled one. It reads
+those documents out of the tagged commit with `git show`, not from the working tree, and
+renders one self-contained HTML to print to PDF — no reportlab and no pandoc, because a file
+that needs an install to regenerate is one that eventually will not regenerate. Where the
+runs were made under an earlier commit than the release, it computes what changed between
+the two and says so: two hashes in one exhibit with no explanation reads as though one is a
+mistake.
+
 ## v0.2-first-result — 2026-08-31
 
 **DOI:** 10.5281/zenodo.22213106 (this version) · 10.5281/zenodo.22205181 (all versions)
