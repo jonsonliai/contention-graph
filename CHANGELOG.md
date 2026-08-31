@@ -7,7 +7,7 @@ See `VERSIONING.md` for what the version numbers mean.
 
 ## v0.2-first-result — 2026-08-31
 
-**DOI:** [pending Zenodo archive]
+**DOI:** 10.5281/zenodo.22213106 (this version) · 10.5281/zenodo.22205181 (all versions)
 **Retrieve with:** `git checkout v0.2-first-result`
 
 First experimental result. Five runs against a live runtime.
